@@ -135,6 +135,7 @@ namespace GLSLPT
         Program* pathTraceShaderLowRes;
         Program* outputShader;
         Program* tonemapShader;
+        Program* computeShader;
 
         // Render textures
         GLuint pathTraceTextureLowRes;
@@ -172,6 +173,7 @@ namespace GLSLPT
         void ResizeRenderer();
         void ReloadShaders();
         void Render();
+        void Compute();
         void Present();
         void Update(float secondsElapsed);
         float GetProgress();

@@ -174,7 +174,8 @@ void SaveFrame(const std::string filename)
 
 void Render()
 {
-    renderer->Render();
+    //renderer->Render();
+    renderer->Compute();
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, renderOptions.windowResolution.x, renderOptions.windowResolution.y);
     renderer->Present();

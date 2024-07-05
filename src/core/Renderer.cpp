@@ -38,6 +38,13 @@ namespace GLSLPT
         return new Program(shaders);
     }
 
+    Program* LoadShaders(const ShaderInclude::ShaderSource& vertShaderObj)
+    {
+        std::vector<Shader> shaders;
+        shaders.push_back(Shader(vertShaderObj, GL_COMPUTE_SHADER));
+        return new Program(shaders);
+    }
+
     Renderer::Renderer(Scene* scene, const std::string& shadersDirectory)
         : scene(scene)
         , BVHBuffer(0)
@@ -68,6 +75,7 @@ namespace GLSLPT
         , pathTraceShaderLowRes(nullptr)
         , outputShader(nullptr)
         , tonemapShader(nullptr)
+        , computeShader(nullptr)
     {
         if (scene == nullptr)
         {
@@ -125,6 +133,7 @@ namespace GLSLPT
         delete pathTraceShaderLowRes;
         delete outputShader;
         delete tonemapShader;
+        delete computeShader;
 
         // Delete denoiser data
         delete[] denoiserInputFramePtr;
@@ -273,6 +282,7 @@ namespace GLSLPT
         delete pathTraceShaderLowRes;
         delete outputShader;
         delete tonemapShader;
+        delete computeShader;
 
         InitFBOs();
         InitShaders();
@@ -385,6 +395,7 @@ namespace GLSLPT
         delete pathTraceShaderLowRes;
         delete outputShader;
         delete tonemapShader;
+        delete computeShader;
 
         InitShaders();
     }
@@ -396,6 +407,7 @@ namespace GLSLPT
         ShaderInclude::ShaderSource pathTraceShaderLowResSrcObj = ShaderInclude::load(shadersDirectory + "preview.glsl");
         ShaderInclude::ShaderSource outputShaderSrcObj = ShaderInclude::load(shadersDirectory + "output.glsl");
         ShaderInclude::ShaderSource tonemapShaderSrcObj = ShaderInclude::load(shadersDirectory + "tonemap.glsl");
+        ShaderInclude::ShaderSource computeShaderSrcObj = ShaderInclude::load(shadersDirectory + "compute/compute.glsl");
 
         // Add preprocessor defines for conditional compilation
         std::string pathtraceDefines = "";
@@ -489,6 +501,7 @@ namespace GLSLPT
         pathTraceShaderLowRes = LoadShaders(vertexShaderSrcObj, pathTraceShaderLowResSrcObj);
         outputShader = LoadShaders(vertexShaderSrcObj, outputShaderSrcObj);
         tonemapShader = LoadShaders(vertexShaderSrcObj, tonemapShaderSrcObj);
+        computeShader = LoadShaders(computeShaderSrcObj);
 
         // Setup shader uniforms
         GLuint shaderObject;
@@ -541,6 +554,11 @@ namespace GLSLPT
         glUniform1i(glGetUniformLocation(shaderObject, "envMapTex"), 9);
         glUniform1i(glGetUniformLocation(shaderObject, "envMapCDFTex"), 10);
         pathTraceShaderLowRes->StopUsing();
+
+        computeShader->Use();
+        shaderObject = computeShader->getObject();
+        glUniform2f(glGetUniformLocation(shaderObject, "resolution"), float(renderSize.x), float(renderSize.y));
+        computeShader->StopUsing();
     }
 
     void Renderer::Render()
@@ -572,6 +590,59 @@ namespace GLSLPT
             glViewport(0, 0, tileWidth, tileHeight);
             glBindTexture(GL_TEXTURE_2D, accumTexture);
             quad->Draw(pathTraceShader);
+
+            // pathTraceTexture is copied to accumTexture and re-used as input for the first step.
+            glBindFramebuffer(GL_FRAMEBUFFER, accumFBO);
+            glViewport(tileWidth * tile.x, tileHeight * tile.y, tileWidth, tileHeight);
+            glBindTexture(GL_TEXTURE_2D, pathTraceTexture);
+            quad->Draw(outputShader);
+
+            // Here we render to tileOutputTexture[currentBuffer] but display tileOutputTexture[1-currentBuffer] until all tiles are done rendering
+            // When all tiles are rendered, we flip the bound texture and start rendering to the other one
+            glBindFramebuffer(GL_FRAMEBUFFER, outputFBO);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tileOutputTexture[currentBuffer], 0);
+            glViewport(0, 0, renderSize.x, renderSize.y);
+            glBindTexture(GL_TEXTURE_2D, accumTexture);
+            quad->Draw(tonemapShader);
+        }
+    }
+
+    void Renderer::Compute()
+    {
+        // If maxSpp was reached then stop rendering. 
+        // TODO: Tonemapping and denosing still need to be able to run on final image
+        if (!scene->dirty && scene->renderOptions.maxSpp != -1 && sampleCounter >= scene->renderOptions.maxSpp)
+            return;
+
+        glActiveTexture(GL_TEXTURE0);
+
+        if (scene->dirty)
+        {
+            // Renders a low res preview if camera/instances are modified
+            glBindFramebuffer(GL_FRAMEBUFFER, pathTraceFBOLowRes);
+            glViewport(0, 0, windowSize.x * pixelRatio, windowSize.y * pixelRatio);
+            quad->Draw(pathTraceShaderLowRes);
+
+            scene->instancesModified = false;
+            scene->dirty = false;
+            scene->envMapModified = false;
+        }
+        else
+        {
+            // Renders to pathTraceTexture while using previously accumulated samples from accumTexture
+            // Rendering is done a tile per frame, so if a 500x500 image is rendered with a tileWidth and tileHeight of 250 then, all tiles (for a single sample) 
+            // get rendered after 4 frames
+            //glBindFramebuffer(GL_FRAMEBUFFER, pathTraceFBO);
+            //glViewport(0, 0, tileWidth, tileHeight);
+            //glBindTexture(GL_TEXTURE_2D, accumTexture);
+            //quad->Draw(pathTraceShader);
+            computeShader->Use();
+            glBindImageTexture(0, pathTraceTexture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA32F);
+            //glBindImageTexture(1, accumTexture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA32F);
+            glBindTexture(GL_TEXTURE_2D, accumTexture);
+            glDispatchCompute(tileWidth, tileHeight, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+            computeShader->StopUsing();
 
             // pathTraceTexture is copied to accumTexture and re-used as input for the first step.
             glBindFramebuffer(GL_FRAMEBUFFER, accumFBO);
@@ -809,5 +880,25 @@ namespace GLSLPT
         glUniform1i(glGetUniformLocation(shaderObject, "simpleAcesFit"), scene->renderOptions.simpleAcesFit);
         glUniform3f(glGetUniformLocation(shaderObject, "backgroundCol"), scene->renderOptions.backgroundCol.x, scene->renderOptions.backgroundCol.y, scene->renderOptions.backgroundCol.z);
         tonemapShader->StopUsing();
+
+        computeShader->Use();
+        shaderObject = computeShader->getObject();
+        glUniform3f(glGetUniformLocation(shaderObject, "camera.position"), scene->camera->position.x, scene->camera->position.y, scene->camera->position.z);
+        glUniform3f(glGetUniformLocation(shaderObject, "camera.right"), scene->camera->right.x, scene->camera->right.y, scene->camera->right.z);
+        glUniform3f(glGetUniformLocation(shaderObject, "camera.up"), scene->camera->up.x, scene->camera->up.y, scene->camera->up.z);
+        glUniform3f(glGetUniformLocation(shaderObject, "camera.forward"), scene->camera->forward.x, scene->camera->forward.y, scene->camera->forward.z);
+        glUniform1f(glGetUniformLocation(shaderObject, "camera.fov"), scene->camera->fov);
+        glUniform1f(glGetUniformLocation(shaderObject, "camera.focalDist"), scene->camera->focalDist);
+        glUniform1f(glGetUniformLocation(shaderObject, "camera.aperture"), scene->camera->aperture);
+        glUniform1i(glGetUniformLocation(shaderObject, "enableEnvMap"), scene->envMap == nullptr ? false : scene->renderOptions.enableEnvMap);
+        glUniform1f(glGetUniformLocation(shaderObject, "envMapIntensity"), scene->renderOptions.envMapIntensity);
+        glUniform1f(glGetUniformLocation(shaderObject, "envMapRot"), scene->renderOptions.envMapRot / 360.0f);
+        glUniform1i(glGetUniformLocation(shaderObject, "maxDepth"), scene->renderOptions.maxDepth);
+        glUniform2f(glGetUniformLocation(shaderObject, "tileOffset"), (float)tile.x* invNumTiles.x, (float)tile.y* invNumTiles.y);
+        glUniform3f(glGetUniformLocation(shaderObject, "uniformLightCol"), scene->renderOptions.uniformLightCol.x, scene->renderOptions.uniformLightCol.y, scene->renderOptions.uniformLightCol.z);
+        glUniform1f(glGetUniformLocation(shaderObject, "roughnessMollificationAmt"), scene->renderOptions.roughnessMollificationAmt);
+        glUniform1i(glGetUniformLocation(shaderObject, "frameNum"), frameCounter);
+        computeShader->StopUsing();
+
     }
 }
