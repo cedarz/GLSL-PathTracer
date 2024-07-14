@@ -282,6 +282,56 @@ vec3 DirectLight(in Ray r, in State state, bool isSurface)
     return Ld;
 }
 
+// https://github.com/Apress/ray-tracing-gems/blob/master/Ch_28_Ray_Tracing_Inhomogeneous_Volumes/main.cpp
+bool in_volume(vec3 vpos)
+{
+    vec3 pos = vpos - vec3(0.0, 1.0, 0.0);
+    return max(abs(pos.x), max(abs(pos.y), abs(pos.z))) < 1.0f;
+}
+
+float get_extinction(vec3 p, int volume_type, float max_extinction)
+{
+    if (volume_type == 0) {
+        vec3 pos = p + vec3(0.5f, 0.5f, 0.5f);
+        int steps = 3;
+        for (int i = 0; i < steps; ++i) {
+            pos *= 3.0f;
+            int s = (int(pos.x) & 1) + (int(pos.y) & 1) + (int(pos.z) & 1);
+            if (s >= 2)
+                return 0.0f;
+        }
+        return max_extinction;
+    } else {
+        float r = 0.5f * (0.5f - abs(p.y));
+        float a = (PI * 8.0) * p.y;
+        float dx = (cos(a) * r - p.x) * 2.0f;
+        float dy = (sin(a) * r - p.z) * 2.0f;
+        return pow(max((1.0f - dx * dx - dy * dy), 0.0f), 8.0f) * max_extinction;
+    }
+}
+
+bool sample_interaction(
+    vec3 ray_pos,
+    vec3 ray_dir,
+    float max_extinction,
+    out float thit)
+{
+    float t = 0.0f;
+    vec3 pos;
+    do {
+        t -= log(1.0f - rand()) / max_extinction;
+
+        pos = ray_pos + ray_dir * t;
+        if (!in_volume(pos))
+            return false;
+        
+    } while (get_extinction(pos, 1, 1.0) < rand() * max_extinction);
+
+    ray_pos = pos;
+    thit = t;
+    return true;
+}
+
 vec4 PathTrace(Ray r)
 {
     vec3 radiance = vec3(0.0);
@@ -387,12 +437,14 @@ vec4 PathTrace(Ray r)
             else
             {
                 // Sample a distance in the medium
-                float scatterDist = min(-log(rand()) / state.medium.density, state.hitDist);
-                mediumSampled = scatterDist < state.hitDist;
+                //float scatterDist = min(-log(rand()) / state.medium.density, state.hitDist);
+                //mediumSampled = scatterDist < state.hitDist;
+                float scatterDist = 0.0;
+                mediumSampled = sample_interaction(r.origin, r.direction, 1.0, scatterDist);
 
                 if (mediumSampled)
                 {
-                    throughput *= state.medium.color;
+                    throughput *= vec3(0.8, 0.8, 0.8);//state.medium.color;
 
                     // Move ray origin to scattering position
                     r.origin += r.direction * scatterDist;
