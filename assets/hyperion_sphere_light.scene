@@ -87,6 +87,26 @@ material marb2
 	clearcoatgloss 0.93
 }
 
+material ball
+{
+	#color 0 0 0
+	#roughness 0.001
+	#metallic 0.01
+
+	albedotexture testball/Sphere_BaseColor.png
+	#normaltexture testball/Sphere_Normal.png
+	metallicroughnesstexture testball/Sphere_OcclusionRoughnessMetallic.png
+}
+
+
+mesh
+{
+	file testball/ball.obj
+	material ball
+	position -0.308737 2.805763 - 1.42968
+	scale 0.01 0.01 0.01
+}
+
 mesh
 {
 	name Glass Ball
